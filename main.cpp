@@ -26,13 +26,14 @@ int wmain(){
 
     //get os version
     unsigned fileVerInfoSize{GetFileVersionInfoSizeExW(FILE_VER_GET_LOCALISED,L"Kernel32.dll",NULL)};
-    char* fileInfo = new char[fileVerInfoSize];
+    //char* fileInfo = new char[fileVerInfoSize];
+    std::unique_ptr<char> fileInfo{new char[fileVerInfoSize]};
     void* fileInfoPtr{nullptr};
             //returns bool need to add conditioanl statement to test success
-    GetFileVersionInfoExW(FILE_VER_GET_LOCALISED,L"Kernel32.dll",NULL,fileVerInfoSize,fileInfo);
+    GetFileVersionInfoExW(FILE_VER_GET_LOCALISED,L"Kernel32.dll",NULL,fileVerInfoSize,fileInfo.get());
     LPCWSTR file{L"\\VarFileInfo\\Translation"};
     PUINT fileLen{0};
-    VerQueryValueW(fileInfo,L"\\",&fileInfoPtr,fileLen);
+    VerQueryValueW(fileInfo.get(),L"\\",&fileInfoPtr,fileLen);
     const VS_FIXEDFILEINFO* fileInfoStruct{static_cast<const VS_FIXEDFILEINFO*>(fileInfoPtr)};
     enum windowsType{Workstation,Server};windowsType osType;
     (IsWindowsServer())?(osType = Server):(osType = Workstation);
