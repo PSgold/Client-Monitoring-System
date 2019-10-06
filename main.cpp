@@ -4,8 +4,12 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <cstring>
+#include <vector>
+#include <array>
 #include <Windows.h>
 #include <VersionHelpers.h>
+#include <intrin.h>
 
 void getHostName(); void getOSVer(); std::wstring getOSProduct(const DWORD);
 std::wstring getProcessorArchName(WORD); void pause();
@@ -55,10 +59,50 @@ int wmain(){
     std::wstring processorArchName;
     processorArchName = getProcessorArchName(sysInfo.wProcessorArchitecture);
     std::wcout<<processorArchName<<L'\n'
-    <<sysInfo.dwNumberOfProcessors<<L'\n'<<sysInfo.dwPageSize<<L'\n';
+    <<sysInfo.dwNumberOfProcessors<<L'\n';
+    // std::wcout<<sysInfo.wProcessorRevision<<L'\n'
+    // <<HIWORD(sysInfo.wProcessorRevision)<<'.'
+    // <<LOWORD(sysInfo.wProcessorRevision)<<L'\n';
+    int processorDetails[4];
+    //std::vector<int[4]> processorBrand(3);
+    char cpuMaker[13];
+    __cpuid(processorDetails,0);
+    memcpy(cpuMaker,&processorDetails[1],4);
+    memcpy(cpuMaker+4,&processorDetails[3],4);
+    memcpy(cpuMaker+8,&processorDetails[2],4);
+    cpuMaker[12] = '\0';std::wcout<<cpuMaker<<L'\n';
+
+    std::array<char,49>cpuStr;
+    unsigned charIndex{0};
+    for(unsigned c{0x80000002};c<0x80000005;c++){
+        __cpuid(processorDetails,c);
+        memcpy(cpuStr.data()+charIndex,&processorDetails,16);
+        charIndex+=16;    
+    }
+    std::array<char,49>cpuModel;
+    unsigned brandIndex{0};
+    for(unsigned c{0};c<48;c++){
+        if(cpuStr[c]!='\0'&&cpuStr[c]!=' '){
+            cpuModel[brandIndex] = cpuStr[c];
+            brandIndex++;
+            for (unsigned d{c+1};d<48;d++){
+                if (cpuStr[d]!='\0'){
+                    cpuModel[brandIndex] = cpuStr[d];
+                    brandIndex++;
+                }else break;
+            }
+            break;
+        }
+    }
+    std::wcout<<cpuModel.data()<<L'\n';
+    
+    SYSTEM_LOGICAL_PROCESSOR_INFORMATION processorInfo;
+    DWORD piBufferSize;
+    GetLogicalProcessorInformation(&processorInfo,&piBufferSize);
+    //get memory info
 
 
-    std::cout.flush();
+    //std::cout.flush();
     std::wcout.flush();
     pause();
     return 0;
