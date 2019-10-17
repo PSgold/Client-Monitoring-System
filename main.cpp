@@ -1,5 +1,6 @@
 #define WINVER 0x0602
 #define _WIN32_WINNT 0x0602
+//#define Debug
 
 #include <iostream>
 #include <memory>
@@ -7,26 +8,117 @@
 #include <cstring>
 #include <vector>
 #include <array>
+#include <thread>
 #include <Windows.h>
 #include <VersionHelpers.h>
 #include <intrin.h>
 
-void getHostName(); void getOSVer(); std::wstring getOSProduct(const DWORD);
-std::wstring getProcessorArchName(WORD); void pause();
+std::wstring getHostName(); void getOSVer(std::wstring&,unsigned*); 
+std::wstring getOSProduct(const DWORD); 
+void getProcessorInfo(std::wstring&,unsigned&,char* manufacturer,char* cpuModelStr);
+std::wstring getProcessorArchName(WORD);
+void printWcharT(wchar_t*,unsigned); void pause();
 
+//////////////////////////////////Main Function//////////////////////////////////////////////
 int wmain(){
     //get client host name
+    std::wstring hostName; 
+    hostName = getHostName();
+    std::wcout<<hostName<<L'\r'<<L'\n';
+
+    //get os version
+    std::wstring osProdName;
+    unsigned build[3];
+    getOSVer(osProdName,build);
+    std::wcout<<osProdName<<L'\r'<<L'\n'
+    <<build[0]<<L'.'<<build[1]<<L'.'<<build[2]
+    <<L'\r'<<L'\n'<<L'\n';
+    
+    //get CPU info
+    std::wstring architecture;
+    unsigned coreCount;
+    unsigned threadCount{std::thread::hardware_concurrency()};
+    std::unique_ptr<char>manufacturer{new char[13]{"\0\0\0\0\0\0\0\0\0\0\0\0"}};
+    std::unique_ptr<char>cpuModelStr{new char[49]{
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+    }}; getProcessorInfo(architecture,coreCount,manufacturer.get(),cpuModelStr.get());
+    std::wcout<<architecture<<L'\r'<<L'\n'<<coreCount
+    <<L'\r'<<L'\n'<<threadCount<<L'\r'<<L'\n'<<manufacturer.get()<<L'\r'<<L'\n'<<cpuModelStr.get()
+    <<L'\r'<<L'\n'<<L'\n';
+    
+    
+    //get memory info
+    MEMORYSTATUSEX memoryInfo{sizeof(MEMORYSTATUSEX)};//sets dwLength to size of struct
+    GlobalMemoryStatusEx(&memoryInfo);
+    auto byteToGB = [](DWORDLONG num){return num / 1073741824.00;};//lambda: converts bytes to GB
+    double totalMemory{byteToGB(memoryInfo.ullTotalPhys)};
+    double availableMemory{byteToGB(memoryInfo.ullAvailPhys)};
+    std::wcout<<totalMemory<<L'\r'<<L'\n'<<availableMemory<<L'\r'<<L'\n'
+    <<memoryInfo.dwMemoryLoad<<'%'<<L" in use"<<L'\r'<<L'\n'<<L'\n';
+
+    //get drive info
+    
+    /* DWORD driveInfo;
+    driveInfo = GetLogicalDrives();
+    std::wcout<<driveInfo<<L'\r'<<L'\n'; */
+
+    DWORD driveInfoSize;
+    driveInfoSize = GetLogicalDriveStringsW(NULL,NULL);
+    unsigned driveCount {(driveInfoSize-1)/4};
+    std::unique_ptr<wchar_t> driveLetters{new wchar_t[driveCount+driveCount+1]};
+    std::wcout<<((driveInfoSize-1)/4)<<L'\r'<<L'\n';
+    std::unique_ptr<wchar_t> driveInfoBuffer{new wchar_t[driveInfoSize]};
+    GetLogicalDriveStringsW(driveInfoSize,driveInfoBuffer.get());
+    
+    unsigned driveBuffIndex{0};
+    for(unsigned c{0};c<driveCount;c++){
+        driveLetters.get()[c] = driveInfoBuffer.get()[driveBuffIndex];
+        driveBuffIndex+=4;
+    }
+    driveLetters.get()[driveCount+1] = L'\0';
+    std::wcout<<driveLetters.get()<<L'\r'<<L'\n';
+    for(unsigned c{0};c<driveCount;c++){
+        wchar_t driveRoot[4];
+        driveRoot[0] = driveLetters.get()[c];
+        driveRoot[1] = L':';
+        driveRoot[2] = L'\\';
+        std::wcout<<GetDriveTypeW(driveRoot);
+    }
+    std::wcout<<L'\r'<<L'\n';
+    /*
+    '0' = Fixed drive
+    '1' = Removable drive
+    '2' = DVD drive
+    */
+    
+    #ifdef Debug
+    printWcharT(driveInfoBuffer.get(),driveInfoSize-1);
+    std::wcout<<L'\r'<<L'\n';
+    #endif
+    
+    //Exit
+    std::wcout.flush();
+    pause();
+    return 0;
+}
+//////////////////////////////////Main Function//////////////////////////////////////////////
+
+
+
+
+
+
+std::wstring getHostName(){
     unsigned long hostNameLen;
     GetComputerNameExW(ComputerNameDnsHostname,NULL,&hostNameLen);
     std::unique_ptr<wchar_t> hostName{new wchar_t[hostNameLen]};
-            //if returns 0 error
-    if(GetComputerNameExW(ComputerNameDnsHostname,hostName.get(),&hostNameLen)==0){
-        std::wcout<<L"Error getting host name"<<L'\n';
-    }else std::wcout<<hostName<<L'\n';
+        //if returns 0 error
+    if(GetComputerNameExW(ComputerNameDnsHostname,hostName.get(),&hostNameLen)==0)return L"HostNameError";
+    else return hostName.get(); 
+}
 
-    //get os version
+void getOSVer(std::wstring& productName,unsigned* build){
     unsigned fileVerInfoSize{GetFileVersionInfoSizeExW(FILE_VER_GET_LOCALISED,L"Kernel32.dll",NULL)};
-    //char* fileInfo = new char[fileVerInfoSize];
     std::unique_ptr<char> fileInfo{new char[fileVerInfoSize]};
     void* fileInfoPtr{nullptr};
             //returns bool need to add conditioanl statement to test success
@@ -35,12 +127,6 @@ int wmain(){
     PUINT fileLen{0};
     VerQueryValueW(fileInfo.get(),L"\\",&fileInfoPtr,fileLen);
     const VS_FIXEDFILEINFO* fileInfoStruct{static_cast<const VS_FIXEDFILEINFO*>(fileInfoPtr)};
-    enum windowsType{Workstation,Server};windowsType osType;
-    (IsWindowsServer())?(osType = Server):(osType = Workstation);
-    std::wcout << HIWORD(fileInfoStruct->dwFileVersionMS) << '.'
-            << LOWORD(fileInfoStruct->dwFileVersionMS) << '.'
-            << HIWORD(fileInfoStruct->dwFileVersionLS) << " ";
-    (osType == Workstation) ? std::wcout<<L"Workstation"<<L'\n' : std::wcout<<L"Server"<<L'\n';
 
 	DWORD product{};
 	GetProductInfo(
@@ -50,67 +136,13 @@ int wmain(){
 		LOWORD(fileInfoStruct->dwFileVersionLS),
 		&product			
 	);
-    
-    std::wstring productName{getOSProduct(product)};
-    std::wcout<<productName<<L'\n'<<L'\n'<<L'\n';
-	//get CPU info
-
-    SYSTEM_INFO sysInfo;
-    GetNativeSystemInfo(&sysInfo);
-    std::wstring processorArchName;
-    processorArchName = getProcessorArchName(sysInfo.wProcessorArchitecture);
-    std::wcout<<processorArchName<<L'\n'
-    <<sysInfo.dwNumberOfProcessors<<L'\n';
-    // std::wcout<<sysInfo.wProcessorRevision<<L'\n'
-    // <<HIWORD(sysInfo.wProcessorRevision)<<'.'
-    // <<LOWORD(sysInfo.wProcessorRevision)<<L'\n';
-    int processorDetails[4];
-    //std::vector<int[4]> processorBrand(3);
-    char cpuMaker[13];
-    __cpuid(processorDetails,0);
-    memcpy(cpuMaker,&processorDetails[1],4);
-    memcpy(cpuMaker+4,&processorDetails[3],4);
-    memcpy(cpuMaker+8,&processorDetails[2],4);
-    cpuMaker[12] = '\0';std::wcout<<cpuMaker<<L'\n';
-
-    std::array<char,49>cpuStr;
-    unsigned charIndex{0};
-    for(unsigned c{0x80000002};c<0x80000005;c++){
-        __cpuid(processorDetails,c);
-        memcpy(cpuStr.data()+charIndex,&processorDetails,16);
-        charIndex+=16;    
-    }
-    std::array<char,49>cpuModel;
-    unsigned brandIndex{0};
-    for(unsigned c{0};c<48;c++){
-        if(cpuStr[c]!='\0'&&cpuStr[c]!=' '){
-            cpuModel[brandIndex] = cpuStr[c];
-            brandIndex++;
-            for (unsigned d{c+1};d<48;d++){
-                if (cpuStr[d]!='\0'){
-                    cpuModel[brandIndex] = cpuStr[d];
-                    brandIndex++;
-                }else break;
-            }
-            break;
-        }
-    }
-    std::wcout<<cpuModel.data()<<L'\n';
-    
-    SYSTEM_LOGICAL_PROCESSOR_INFORMATION processorInfo;
-    DWORD piBufferSize;
-    GetLogicalProcessorInformation(&processorInfo,&piBufferSize);
-    //get memory info
-
-
-    //std::cout.flush();
-    std::wcout.flush();
-    pause();
-    return 0;
+    productName = getOSProduct(product);
+    build[0] = HIWORD(fileInfoStruct->dwFileVersionMS);
+    build[1] = LOWORD(fileInfoStruct->dwFileVersionMS);
+    build[2] = HIWORD(fileInfoStruct->dwFileVersionLS);
 }
 
-
- std::wstring getOSProduct(const DWORD product){
+std::wstring getOSProduct(const DWORD product){
     switch (product){
         case 0x00000030:return L"Windows 10 Pro";
         case 0x00000065:return L"Windows 10 Home";
@@ -182,6 +214,47 @@ int wmain(){
     }
 }
 
+void getProcessorInfo(
+    std::wstring& cpuArchName,unsigned& coreCount,
+    char* manufacturer,char* cpuModelStr
+){
+    SYSTEM_INFO sysInfo;
+    GetNativeSystemInfo(&sysInfo);
+    cpuArchName = getProcessorArchName(sysInfo.wProcessorArchitecture);
+    coreCount = sysInfo.dwNumberOfProcessors;
+    
+    int processorDetails[4];
+    __cpuid(processorDetails,0);
+    memcpy(manufacturer,&processorDetails[1],4);
+    memcpy(manufacturer+4,&processorDetails[3],4);
+    memcpy(manufacturer+8,&processorDetails[2],4);
+
+    char cpuStr[]{
+        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
+    };
+    unsigned charIndex{0};
+    for(unsigned c{0x80000002};c<0x80000005;c++){
+        __cpuid(processorDetails,c);
+        memcpy(cpuStr+charIndex,&processorDetails,16);
+        charIndex+=16;    
+    }
+    
+    unsigned brandIndex{0};
+    for(unsigned c{0};c<48;c++){
+        if(cpuStr[c]!='\0'&&cpuStr[c]!=' '){
+            cpuModelStr[brandIndex] = cpuStr[c];
+            brandIndex++;
+            for (unsigned d{c+1};d<48;d++){
+                if (cpuStr[d]!='\0'){
+                    cpuModelStr[brandIndex] = cpuStr[d];
+                    brandIndex++;
+                }else break;
+            }
+            break;
+        }
+    }
+}
+
 std::wstring getProcessorArchName(WORD archNum){
     switch (archNum){
         case 9:return L"AMD64";
@@ -195,7 +268,14 @@ std::wstring getProcessorArchName(WORD archNum){
 }
 
 void pause(){
-    std::wstring temp;
     std::wcout<<L"Pause... ";
-    std::getline(std::wcin, temp);
+    std::wcin.get();
 }
+
+#ifdef Debug
+void printWcharT(wchar_t* str,unsigned size){
+    for(unsigned c{0};c<size;c++){
+        std::wcout<<str[c]<<'\r'<<'\n';
+    }
+}
+#endif
