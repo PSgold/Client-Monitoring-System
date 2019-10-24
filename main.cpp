@@ -16,8 +16,9 @@
 std::wstring getHostName(); void getOSVer(std::wstring&,unsigned*); 
 std::wstring getOSProduct(const DWORD); 
 void getProcessorInfo(std::wstring&,unsigned&,char* manufacturer,char* cpuModelStr);
-std::wstring getProcessorArchName(WORD);
+std::wstring getProcessorArchName(WORD); std::wstring getDriveInfo();
 void printWcharT(wchar_t*,unsigned); void pause();
+void zeroMemory(wchar_t* buff,unsigned size);
 
 //////////////////////////////////Main Function//////////////////////////////////////////////
 int wmain(){
@@ -57,43 +58,18 @@ int wmain(){
     <<memoryInfo.dwMemoryLoad<<'%'<<L" in use"<<L'\r'<<L'\n'<<L'\n';
 
     //get drive info
-    
-    /* DWORD driveInfo;
-    driveInfo = GetLogicalDrives();
-    std::wcout<<driveInfo<<L'\r'<<L'\n'; */
-
-    DWORD driveInfoSize;
-    driveInfoSize = GetLogicalDriveStringsW(NULL,NULL);
-    unsigned driveCount {(driveInfoSize-1)/4};
-    std::unique_ptr<wchar_t> driveLetters{new wchar_t[driveCount+driveCount+1]};
-    std::wcout<<((driveInfoSize-1)/4)<<L'\r'<<L'\n';
-    std::unique_ptr<wchar_t> driveInfoBuffer{new wchar_t[driveInfoSize]};
-    GetLogicalDriveStringsW(driveInfoSize,driveInfoBuffer.get());
-    
-    unsigned driveBuffIndex{0};
-    for(unsigned c{0};c<driveCount;c++){
-        driveLetters.get()[c] = driveInfoBuffer.get()[driveBuffIndex];
-        driveBuffIndex+=4;
-    }
-    driveLetters.get()[driveCount+1] = L'\0';
-    std::wcout<<driveLetters.get()<<L'\r'<<L'\n';
-    for(unsigned c{0};c<driveCount;c++){
-        wchar_t driveRoot[4];
-        driveRoot[0] = driveLetters.get()[c];
-        driveRoot[1] = L':';
-        driveRoot[2] = L'\\';
-        std::wcout<<GetDriveTypeW(driveRoot);
-    }
-    std::wcout<<L'\r'<<L'\n';
+    std::wstring driveStr;
+    driveStr = getDriveInfo();
     /*
-    '0' = Fixed drive
-    '1' = Removable drive
-    '2' = DVD drive
+    driveStr will hold list of drive letters
+    each letter followed by a number that represents drive type
+    '3' = Fixed drive ; '2' = Removable drive(ignored) ; '5' = DVD drive
     */
+    std::wcout<<driveStr<<L'\r'<<L'\n'<<L'\n';
+    
     
     #ifdef Debug
-    printWcharT(driveInfoBuffer.get(),driveInfoSize-1);
-    std::wcout<<L'\r'<<L'\n';
+
     #endif
     
     //Exit
@@ -267,6 +243,43 @@ std::wstring getProcessorArchName(WORD archNum){
     }
 }
 
+std::wstring getDriveInfo(){
+    DWORD driveInfoSize;
+    driveInfoSize = GetLogicalDriveStringsW(NULL,NULL);
+    std::unique_ptr<wchar_t> driveInfoBuffer{new wchar_t[driveInfoSize]};
+    zeroMemory(driveInfoBuffer.get(),driveInfoSize);
+    GetLogicalDriveStringsW(driveInfoSize,driveInfoBuffer.get());
+    unsigned driveCount {(driveInfoSize-1)/4};
+    std::unique_ptr<wchar_t> driveLetters{new wchar_t[driveCount+driveCount+1]};
+    zeroMemory(driveLetters.get(),driveCount+driveCount+1);
+    driveLetters.get()[driveCount+driveCount+1] = L'\0';
+    std::wcout<<((driveInfoSize-1)/4)<<L'\r'<<L'\n';
+    
+    wchar_t driveRoot[4]{L"\0\0\0"};
+    driveRoot[1] = L':';driveRoot[2] = L'\\';
+    unsigned driveBuffIndex{0};
+    unsigned driveLetterIndex{0};
+    for(unsigned c{0};c<driveCount;c++){
+        driveRoot[0] = driveInfoBuffer.get()[driveBuffIndex];
+        //'3' = Fixed drive ; '2' = Removable drive(ignored) ; '5' = DVD drive
+        if(GetDriveTypeW(driveRoot)==3)driveLetters.get()[driveLetterIndex+1] = L'3';
+        else if(GetDriveTypeW(driveRoot)==5)driveLetters.get()[driveLetterIndex+1] = L'5';
+        else if(GetDriveTypeW(driveRoot)==2){
+            driveBuffIndex+=4; continue;
+        }
+        driveLetters.get()[driveLetterIndex] = driveInfoBuffer.get()[driveBuffIndex];
+        driveBuffIndex+=4;
+        driveLetterIndex+=2;
+    }
+    #ifdef Debug
+    printWcharT(driveInfoBuffer.get(),driveInfoSize);
+    std::wcout<<'\r'<<'\n';
+    printWcharT(driveLetters.get(),driveCount+driveCount);
+    std::wcout<<'\r'<<'\n';
+    #endif
+    return driveLetters.get();
+}
+
 void pause(){
     std::wcout<<L"Pause... ";
     std::wcin.get();
@@ -279,3 +292,9 @@ void printWcharT(wchar_t* str,unsigned size){
     }
 }
 #endif
+
+void zeroMemory(wchar_t* buff,unsigned size){
+    for(unsigned c{0};c<size;c++){
+        buff[c] = L'\0';
+    }
+}
