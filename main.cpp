@@ -1,8 +1,9 @@
 #define WINVER 0x0602
 #define _WIN32_WINNT 0x0602
-//#define Debug
+#define Debug
 
 #include <iostream>
+#include <iomanip>
 #include <memory>
 #include <string>
 #include <cstring>
@@ -13,28 +14,53 @@
 #include <VersionHelpers.h>
 #include <intrin.h>
 
+///////////////////////////////////User Defined Types//////////////////////////////////////////////
+struct driveInfo{
+        wchar_t root;
+        unsigned long lpSectorsPerCluster;
+        unsigned long lpBytesPerSector;
+        unsigned long lpNumberOfFreeClusters;
+        unsigned long lpTotalNumberOfClusters;
+
+        unsigned long long lpFreeBytesAvailableToCaller;
+        unsigned long long lpTotalNumberOfBytes;
+        unsigned long long lpTotalNumberOfFreeBytes;
+};
+///////////////////////////////////User Defined Types//////////////////////////////////////////////
+
+
+//////////////////////////////////Function Declarations///////////////////////////////////////////
 std::wstring getHostName(); void getOSVer(std::wstring&,unsigned*); 
 std::wstring getOSProduct(const DWORD); 
 void getProcessorInfo(std::wstring&,unsigned&,char* manufacturer,char* cpuModelStr);
-std::wstring getProcessorArchName(WORD); std::wstring getDriveInfo();
+std::wstring getProcessorArchName(WORD); 
+std::wstring getDriveInfo(); void getDriveBytes(std::wstring&, driveInfo*);
 void printWcharT(wchar_t*,unsigned); void pause();
 void zeroMemory(wchar_t* buff,unsigned size);
+void printFormat(std::wstring string);
+//////////////////////////////////Function Declarations///////////////////////////////////////////
 
 //////////////////////////////////Main Function//////////////////////////////////////////////
 int wmain(){
     //get client host name
     std::wstring hostName; 
     hostName = getHostName();
+    #ifdef Debug
     std::wcout<<hostName<<L'\r'<<L'\n';
+    #endif
+
 
     //get os version
     std::wstring osProdName;
     unsigned build[3];
     getOSVer(osProdName,build);
+    #ifdef Debug
     std::wcout<<osProdName<<L'\r'<<L'\n'
     <<build[0]<<L'.'<<build[1]<<L'.'<<build[2]
     <<L'\r'<<L'\n'<<L'\n';
+    #endif
     
+
     //get CPU info
     std::wstring architecture;
     unsigned coreCount;
@@ -43,34 +69,49 @@ int wmain(){
     std::unique_ptr<char>cpuModelStr{new char[49]{
         "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
     }}; getProcessorInfo(architecture,coreCount,manufacturer.get(),cpuModelStr.get());
+    #ifdef Debug
     std::wcout<<architecture<<L'\r'<<L'\n'<<coreCount
     <<L'\r'<<L'\n'<<threadCount<<L'\r'<<L'\n'<<manufacturer.get()<<L'\r'<<L'\n'<<cpuModelStr.get()
     <<L'\r'<<L'\n'<<L'\n';
-    
-    
+    #endif
+
+
     //get memory info
     MEMORYSTATUSEX memoryInfo{sizeof(MEMORYSTATUSEX)};//sets dwLength to size of struct
     GlobalMemoryStatusEx(&memoryInfo);
     auto byteToGB = [](DWORDLONG num){return num / 1073741824.00;};//lambda: converts bytes to GB
     double totalMemory{byteToGB(memoryInfo.ullTotalPhys)};
     double availableMemory{byteToGB(memoryInfo.ullAvailPhys)};
+    #ifdef Debug
     std::wcout<<totalMemory<<L'\r'<<L'\n'<<availableMemory<<L'\r'<<L'\n'
     <<memoryInfo.dwMemoryLoad<<'%'<<L" in use"<<L'\r'<<L'\n'<<L'\n';
+    #endif
+
 
     //get drive info
+    /*driveStr will hold list of drive letters
+    each letter followed by a number that represents drive type
+    '3' = Fixed drive ; '2' = Removable drive(ignored) ; '5' = DVD drive*/
     std::wstring driveStr;
     driveStr = getDriveInfo();
-    /*
-    driveStr will hold list of drive letters
-    each letter followed by a number that represents drive type
-    '3' = Fixed drive ; '2' = Removable drive(ignored) ; '5' = DVD drive
-    */
-    std::wcout<<driveStr<<L'\r'<<L'\n'<<L'\n';
-    
+    unsigned driveCount{driveStr.length()/2};
+    #ifdef Debug
+    std::wcout<<driveCount<<L'\r'<<L'\n'<<driveStr<<L'\r'<<L'\n'<<L'\n';
+    #endif
+    std::unique_ptr<driveInfo> driveInfoArray{new driveInfo[driveCount]};
+    getDriveBytes(driveStr,driveInfoArray.get());
     
     #ifdef Debug
-
+    printFormat(L"Drive");printFormat(L"Total Bytes");printFormat(L"Available Bytes");
+    std::wcout<<L'\r'<<L'\n';
+    for(unsigned c{0};c<driveCount;c++){
+        std::wcout<<std::setw(15)<<std::left<<driveInfoArray.get()[c].root<<
+        std::setw(15)<<std::right<<driveInfoArray.get()[c].lpTotalNumberOfBytes
+        <<std::setw(15)<<std::right<<driveInfoArray.get()[c].lpTotalNumberOfFreeBytes<<L'\r'<<L'\n';
+    }
     #endif
+
+    std::wcout<<L'\r'<<L'\n'<<L'\n';
     
     //Exit
     std::wcout.flush();
@@ -82,7 +123,7 @@ int wmain(){
 
 
 
-
+/////////////////////////////////Function Definitions/////////////////////////////////////////
 
 std::wstring getHostName(){
     unsigned long hostNameLen;
@@ -264,20 +305,93 @@ std::wstring getDriveInfo(){
         //'3' = Fixed drive ; '2' = Removable drive(ignored) ; '5' = DVD drive
         if(GetDriveTypeW(driveRoot)==3)driveLetters.get()[driveLetterIndex+1] = L'3';
         else if(GetDriveTypeW(driveRoot)==5)driveLetters.get()[driveLetterIndex+1] = L'5';
-        else if(GetDriveTypeW(driveRoot)==2){
-            driveBuffIndex+=4; continue;
-        }
+        else {driveBuffIndex+=4; continue;}
         driveLetters.get()[driveLetterIndex] = driveInfoBuffer.get()[driveBuffIndex];
         driveBuffIndex+=4;
         driveLetterIndex+=2;
     }
-    #ifdef Debug
+    /* #ifdef Debug
     printWcharT(driveInfoBuffer.get(),driveInfoSize);
     std::wcout<<'\r'<<'\n';
     printWcharT(driveLetters.get(),driveCount+driveCount);
     std::wcout<<'\r'<<'\n';
-    #endif
+    #endif */
     return driveLetters.get();
+}
+
+void getDriveBytes(std::wstring& driveStr, driveInfo* driveInfoArray){
+    struct diskStruct{
+        DWORD* lpSectorsPerCluster;
+        DWORD* lpBytesPerSector;
+        DWORD* lpNumberOfFreeClusters;
+        DWORD* lpTotalNumberOfClusters;
+
+        ULARGE_INTEGER* lpFreeBytesAvailableToCaller;
+        ULARGE_INTEGER* lpTotalNumberOfBytes;
+        ULARGE_INTEGER* lpTotalNumberOfFreeBytes;
+
+        diskStruct():
+            lpSectorsPerCluster{new DWORD},
+            lpBytesPerSector{new DWORD},
+            lpNumberOfFreeClusters{new DWORD},
+            lpTotalNumberOfClusters{new DWORD},
+
+            lpFreeBytesAvailableToCaller{new ULARGE_INTEGER},
+            lpTotalNumberOfBytes{new ULARGE_INTEGER},
+            lpTotalNumberOfFreeBytes{new ULARGE_INTEGER}
+        {}
+        
+        ~diskStruct(){
+            delete lpSectorsPerCluster;
+            delete lpBytesPerSector;
+            delete lpNumberOfFreeClusters;
+            delete lpTotalNumberOfClusters;
+
+            delete lpFreeBytesAvailableToCaller;
+            delete lpTotalNumberOfBytes;
+            delete lpTotalNumberOfFreeBytes;
+        }
+    };
+
+    unsigned long long* lpFreeBytesAvailableToCallerPtr{nullptr};
+    unsigned long long* lpTotalNumberOfBytesPtr{nullptr};
+    unsigned long long* lpTotalNumberOfFreeBytesPtr{nullptr};
+    wchar_t rootDiskStr[3];rootDiskStr[2] = L'\0';rootDiskStr[1] = L':';
+    unsigned indexDIA{0};
+    diskStruct diskInfo;
+    for(unsigned c{0};c<driveStr.length();c+=2){
+        rootDiskStr[0] = driveStr[c];
+        GetDiskFreeSpaceW(
+            rootDiskStr,
+            diskInfo.lpSectorsPerCluster,
+            diskInfo.lpBytesPerSector,
+            diskInfo.lpNumberOfFreeClusters,
+            diskInfo.lpTotalNumberOfClusters
+            );
+        GetDiskFreeSpaceExW(
+            rootDiskStr,
+            diskInfo.lpFreeBytesAvailableToCaller,
+            diskInfo.lpTotalNumberOfBytes,
+            diskInfo.lpTotalNumberOfFreeBytes
+        );
+        driveInfoArray[indexDIA].root = driveStr[c];
+        driveInfoArray[indexDIA].lpSectorsPerCluster = *(diskInfo.lpSectorsPerCluster);
+        driveInfoArray[indexDIA].lpBytesPerSector = *(diskInfo.lpBytesPerSector);
+        driveInfoArray[indexDIA].lpNumberOfFreeClusters = *(diskInfo.lpNumberOfFreeClusters);
+        driveInfoArray[indexDIA].lpTotalNumberOfClusters = *(diskInfo.lpTotalNumberOfClusters);
+        
+        unsigned long long* lpFreeBytesAvailableToCallerPtr = reinterpret_cast<unsigned long long*>(diskInfo.lpTotalNumberOfFreeBytes);
+        unsigned long long* lpTotalNumberOfBytesPtr = reinterpret_cast<unsigned long long*>(diskInfo.lpTotalNumberOfBytes);
+        unsigned long long* lpTotalNumberOfFreeBytesPtr = reinterpret_cast<unsigned long long*>(diskInfo.lpTotalNumberOfFreeBytes);
+        driveInfoArray[indexDIA].lpFreeBytesAvailableToCaller = *(lpFreeBytesAvailableToCallerPtr);
+        driveInfoArray[indexDIA].lpTotalNumberOfBytes = *(lpTotalNumberOfBytesPtr);
+        driveInfoArray[indexDIA].lpTotalNumberOfFreeBytes = *(lpTotalNumberOfFreeBytesPtr);
+
+        indexDIA++;
+    }
+    delete lpFreeBytesAvailableToCallerPtr;
+    delete lpTotalNumberOfBytesPtr;
+    delete lpTotalNumberOfFreeBytesPtr;
 }
 
 void pause(){
@@ -298,3 +412,9 @@ void zeroMemory(wchar_t* buff,unsigned size){
         buff[c] = L'\0';
     }
 }
+
+void printFormat(std::wstring string){
+    std::wcout.width(15);
+    std::wcout<<std::left<<string;
+}
+/////////////////////////////////Function Definitions/////////////////////////////////////////
