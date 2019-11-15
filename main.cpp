@@ -1,8 +1,10 @@
 #define WINVER 0x0602
 #define _WIN32_WINNT 0x0602
+#define WIN32_LEAN_AND_MEAN
 #define Debug
 
 #include <iostream>
+#include <fstream>
 #include <iomanip>
 #include <memory>
 #include <string>
@@ -11,21 +13,69 @@
 #include <array>
 #include <thread>
 #include <Windows.h>
+#include <WinSock2.h>
+#include <ws2tcpip.h>
 #include <VersionHelpers.h>
 #include <intrin.h>
 
+#pragma comment(lib, "Ws2_32.lib")
+
+
+//////////////////////////////////////function templates/////////////////////////////////////////////
+template <typename Tchar>
+void zeroMemory(Tchar buff,unsigned size){
+    for(unsigned c{0};c<size;c++){
+        buff[c] = '\0';
+    }
+}
+template <typename num>
+double byteToGB(num number){return (number / 1073741824.00);}
+//////////////////////////////////////function templates////////////////////////////////////////////
+
+
 ///////////////////////////////////User Defined Types//////////////////////////////////////////////
+#pragma pack(push,1)
 struct driveInfo{
-        wchar_t root;
-        unsigned long lpSectorsPerCluster;
-        unsigned long lpBytesPerSector;
-        unsigned long lpNumberOfFreeClusters;
-        unsigned long lpTotalNumberOfClusters;
+        char root;
+        unsigned lpSectorsPerCluster;
+        unsigned lpBytesPerSector;
+        unsigned lpNumberOfFreeClusters;
+        unsigned lpTotalNumberOfClusters;
 
         unsigned long long lpFreeBytesAvailableToCaller;
         unsigned long long lpTotalNumberOfBytes;
         unsigned long long lpTotalNumberOfFreeBytes;
 };
+
+//this is a struct to serialize and send over the network
+//it doesn't include the drive info as that will be sent separately
+struct clientSystemInfo{
+    //os info
+    char hostName[25];
+    char osVersion[50];
+    unsigned osBuild[3];
+    
+    //processor info
+    char cpuBitNum[15];
+    unsigned coreCount;
+    unsigned threadCount;
+    char manufacturer[13];
+    char cpuModelStr[75];
+
+    //memory info
+    double totalMemory;
+    double availableMemory;
+    unsigned percentInUse;
+
+    clientSystemInfo(){
+        zeroMemory<char*>(hostName,25);
+        zeroMemory<char*>(osVersion,50);
+        zeroMemory<char*>(cpuBitNum,15);
+        zeroMemory<char*>(manufacturer,13);
+        zeroMemory<char*>(cpuModelStr,75);
+    }
+};
+#pragma pack(pop)
 ///////////////////////////////////User Defined Types//////////////////////////////////////////////
 
 
@@ -36,54 +86,57 @@ void getProcessorInfo(std::wstring&,unsigned&,char* manufacturer,char* cpuModelS
 std::wstring getProcessorArchName(WORD); 
 std::wstring getDriveInfo(); void getDriveBytes(std::wstring&, driveInfo*);
 void printWcharT(wchar_t*,unsigned); void pause();
-void zeroMemory(wchar_t* buff,unsigned size);
 void printFormat(std::wstring string);
 //////////////////////////////////Function Declarations///////////////////////////////////////////
 
 //////////////////////////////////Main Function//////////////////////////////////////////////
 int wmain(){
+    std::unique_ptr<clientSystemInfo>csiPtr{new clientSystemInfo};
     //get client host name
     std::wstring hostName; 
     hostName = getHostName();
+    WideCharToMultiByte(CP_UTF8,0,hostName.data(),-1,csiPtr->hostName,25,NULL,NULL);
     #ifdef Debug
-    std::wcout<<hostName<<L'\r'<<L'\n';
+    std::wcout<<csiPtr->hostName<<L'\r'<<L'\n';
     #endif
 
 
     //get os version
     std::wstring osProdName;
     unsigned build[3];
-    getOSVer(osProdName,build);
+    getOSVer(osProdName,csiPtr->osBuild);
+    WideCharToMultiByte(CP_UTF8,0,osProdName.data(),-1,csiPtr->osVersion,50,NULL,NULL);
     #ifdef Debug
-    std::wcout<<osProdName<<L'\r'<<L'\n'
-    <<build[0]<<L'.'<<build[1]<<L'.'<<build[2]
+    std::wcout<<csiPtr->osVersion<<L'\r'<<L'\n'
+    <<csiPtr->osBuild[0]<<L'.'<<csiPtr->osBuild[1]<<L'.'<<csiPtr->osBuild[2]
     <<L'\r'<<L'\n'<<L'\n';
     #endif
     
 
     //get CPU info
     std::wstring architecture;
-    unsigned coreCount;
-    unsigned threadCount{std::thread::hardware_concurrency()};
+    csiPtr->threadCount = std::thread::hardware_concurrency();
     std::unique_ptr<char>manufacturer{new char[13]{"\0\0\0\0\0\0\0\0\0\0\0\0"}};
     std::unique_ptr<char>cpuModelStr{new char[49]{
         "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-    }}; getProcessorInfo(architecture,coreCount,manufacturer.get(),cpuModelStr.get());
+    }}; getProcessorInfo(architecture,csiPtr->coreCount,csiPtr->manufacturer,csiPtr->cpuModelStr);
+    WideCharToMultiByte(CP_UTF8,0,osProdName.data(),-1,csiPtr->cpuBitNum,15,NULL,NULL);
     #ifdef Debug
-    std::wcout<<architecture<<L'\r'<<L'\n'<<coreCount
-    <<L'\r'<<L'\n'<<threadCount<<L'\r'<<L'\n'<<manufacturer.get()<<L'\r'<<L'\n'<<cpuModelStr.get()
-    <<L'\r'<<L'\n'<<L'\n';
+    std::wcout<<architecture<<L'\r'<<L'\n'<<csiPtr->coreCount
+    <<L'\r'<<L'\n'<<csiPtr->threadCount<<L'\r'<<L'\n'<<csiPtr->manufacturer
+    <<L'\r'<<L'\n'<<csiPtr->cpuModelStr<<L'\r'<<L'\n'<<L'\n';
     #endif
 
 
     //get memory info
     MEMORYSTATUSEX memoryInfo{sizeof(MEMORYSTATUSEX)};//sets dwLength to size of struct
     GlobalMemoryStatusEx(&memoryInfo);
-    auto byteToGB = [](DWORDLONG num){return num / 1073741824.00;};//lambda: converts bytes to GB
-    double totalMemory{byteToGB(memoryInfo.ullTotalPhys)};
-    double availableMemory{byteToGB(memoryInfo.ullAvailPhys)};
+    //auto byteToGB = [](DWORDLONG num){return num / 1073741824.00;};//lambda: converts bytes to GB
+    csiPtr->totalMemory = byteToGB<DWORDLONG>(memoryInfo.ullTotalPhys);
+    csiPtr->availableMemory = byteToGB<DWORDLONG>(memoryInfo.ullAvailPhys);
+
     #ifdef Debug
-    std::wcout<<totalMemory<<L'\r'<<L'\n'<<availableMemory<<L'\r'<<L'\n'
+    std::wcout<<csiPtr->totalMemory<<L'\r'<<L'\n'<<csiPtr->availableMemory<<L'\r'<<L'\n'
     <<memoryInfo.dwMemoryLoad<<'%'<<L" in use"<<L'\r'<<L'\n'<<L'\n';
     #endif
 
@@ -95,9 +148,9 @@ int wmain(){
     std::wstring driveStr;
     driveStr = getDriveInfo();
     unsigned driveCount{driveStr.length()/2};
-    #ifdef Debug
+    /* #ifdef Debug
     std::wcout<<driveCount<<L'\r'<<L'\n'<<driveStr<<L'\r'<<L'\n'<<L'\n';
-    #endif
+    #endif */
     std::unique_ptr<driveInfo> driveInfoArray{new driveInfo[driveCount]};
     getDriveBytes(driveStr,driveInfoArray.get());
     
@@ -111,8 +164,69 @@ int wmain(){
     }
     #endif
 
+    #ifdef Debug
     std::wcout<<L'\r'<<L'\n'<<L'\n';
+    #endif
+
+
+    /////////////////////////////////////////////create client socket///////////////////////////////////
+    std::wstring ipAddress;//server ip address
+    unsigned port{62211};//server port
+    std::wifstream getIPaddr("clientIP.txt");
+    getIPaddr>>ipAddress;
+    #ifdef Debug
+    std::wcout<<ipAddress<<L'\n';
+    #endif
+
+    //Initialize WinSock
+    WSADATA wsaData;
+    if((WSAStartup(MAKEWORD(2,2),&wsaData))!=0)return 1;
     
+    //Create Socket
+    SOCKET cSock{socket(AF_INET,SOCK_STREAM,IPPROTO_TCP)};
+    if(cSock==INVALID_SOCKET){WSACleanup(); return 1;}
+    //Fill in a socket address structure
+    sockaddr_in cSockAddr;
+        cSockAddr.sin_family = AF_INET;
+        cSockAddr.sin_port = htons(port);
+        InetPtonW(AF_INET,ipAddress.data(),&cSockAddr.sin_addr);
+    //connect to server
+    if(
+        (connect(
+                cSock,reinterpret_cast<sockaddr*>(&cSockAddr),
+                sizeof(cSockAddr))
+        )!=0
+    ){closesocket(cSock);WSACleanup();return 1;}
+    //Do-While loop to send and receive data
+    char* serializedData1{reinterpret_cast<char*>(csiPtr.get())};
+    char* serializedData2{reinterpret_cast<char*>(driveInfoArray.get())};
+    char confirmReception[7];
+    if(send(cSock,serializedData1,sizeof(clientSystemInfo),MSG_OOB)==SOCKET_ERROR){
+        closesocket(cSock);WSACleanup();return 1;
+    }
+    if(recv(cSock,confirmReception,7,MSG_WAITALL)==SOCKET_ERROR){
+        closesocket(cSock);WSACleanup();return 1;
+    }
+    if(send(cSock,serializedData2,sizeof(driveInfoArray),MSG_OOB)==SOCKET_ERROR){
+        closesocket(cSock);WSACleanup();return 1;
+    }
+
+    #ifdef Debug
+    std::wcout<<confirmReception<<L'\n';
+    #endif
+    if(recv(cSock,confirmReception,7,MSG_WAITALL)==SOCKET_ERROR){
+        closesocket(cSock);WSACleanup();return 1;
+    }
+    
+    //Gracefully close down everything
+    closesocket(cSock);WSACleanup();
+    #ifdef Debug
+    std::wcout<<confirmReception<<L'\n';
+    #endif
+    //////////////////////////////////////////create client socket/////////////////////////////////////
+    
+
+    std::wcout<<sizeof(clientSystemInfo)<<" : "<<sizeof(driveInfo)<<L'\n';
     //Exit
     std::wcout.flush();
     pause();
@@ -288,13 +402,11 @@ std::wstring getDriveInfo(){
     DWORD driveInfoSize;
     driveInfoSize = GetLogicalDriveStringsW(NULL,NULL);
     std::unique_ptr<wchar_t> driveInfoBuffer{new wchar_t[driveInfoSize]};
-    zeroMemory(driveInfoBuffer.get(),driveInfoSize);
+    zeroMemory<wchar_t*>(driveInfoBuffer.get(),driveInfoSize);
     GetLogicalDriveStringsW(driveInfoSize,driveInfoBuffer.get());
     unsigned driveCount {(driveInfoSize-1)/4};
     std::unique_ptr<wchar_t> driveLetters{new wchar_t[driveCount+driveCount+1]};
-    zeroMemory(driveLetters.get(),driveCount+driveCount+1);
-    driveLetters.get()[driveCount+driveCount+1] = L'\0';
-    std::wcout<<((driveInfoSize-1)/4)<<L'\r'<<L'\n';
+    zeroMemory<wchar_t*>(driveLetters.get(),driveCount+driveCount+1);
     
     wchar_t driveRoot[4]{L"\0\0\0"};
     driveRoot[1] = L':';driveRoot[2] = L'\\';
@@ -374,7 +486,7 @@ void getDriveBytes(std::wstring& driveStr, driveInfo* driveInfoArray){
             diskInfo.lpTotalNumberOfBytes,
             diskInfo.lpTotalNumberOfFreeBytes
         );
-        driveInfoArray[indexDIA].root = driveStr[c];
+        driveInfoArray[indexDIA].root = driveStr[c]; //compiler needs to convert wchar(of wstring) to char
         driveInfoArray[indexDIA].lpSectorsPerCluster = *(diskInfo.lpSectorsPerCluster);
         driveInfoArray[indexDIA].lpBytesPerSector = *(diskInfo.lpBytesPerSector);
         driveInfoArray[indexDIA].lpNumberOfFreeClusters = *(diskInfo.lpNumberOfFreeClusters);
@@ -407,11 +519,11 @@ void printWcharT(wchar_t* str,unsigned size){
 }
 #endif
 
-void zeroMemory(wchar_t* buff,unsigned size){
+/* void zeroMemory(wchar_t* buff,unsigned size){
     for(unsigned c{0};c<size;c++){
         buff[c] = L'\0';
     }
-}
+} */
 
 void printFormat(std::wstring string){
     std::wcout.width(15);
