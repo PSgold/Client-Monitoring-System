@@ -86,7 +86,7 @@ void getProcessorInfo(std::wstring&,unsigned&,char* manufacturer,char* cpuModelS
 std::wstring getProcessorArchName(WORD); 
 std::wstring getDriveInfo(); void getDriveBytes(std::wstring&, driveInfo*);
 void printWcharT(wchar_t*,unsigned); void pause();
-void printFormat(std::wstring string);
+void printFormat(std::wstring string);void printE(std::string text);
 //////////////////////////////////Function Declarations///////////////////////////////////////////
 
 //////////////////////////////////Main Function//////////////////////////////////////////////
@@ -120,9 +120,9 @@ int wmain(){
     std::unique_ptr<char>cpuModelStr{new char[49]{
         "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
     }}; getProcessorInfo(architecture,csiPtr->coreCount,csiPtr->manufacturer,csiPtr->cpuModelStr);
-    WideCharToMultiByte(CP_UTF8,0,osProdName.data(),-1,csiPtr->cpuBitNum,15,NULL,NULL);
+    WideCharToMultiByte(CP_UTF8,0,architecture.data(),-1,csiPtr->cpuBitNum,15,NULL,NULL);
     #ifdef Debug
-    std::wcout<<architecture<<L'\r'<<L'\n'<<csiPtr->coreCount
+    std::wcout<<csiPtr->cpuBitNum<<L'\r'<<L'\n'<<csiPtr->coreCount
     <<L'\r'<<L'\n'<<csiPtr->threadCount<<L'\r'<<L'\n'<<csiPtr->manufacturer
     <<L'\r'<<L'\n'<<csiPtr->cpuModelStr<<L'\r'<<L'\n'<<L'\n';
     #endif
@@ -134,10 +134,10 @@ int wmain(){
     //auto byteToGB = [](DWORDLONG num){return num / 1073741824.00;};//lambda: converts bytes to GB
     csiPtr->totalMemory = byteToGB<DWORDLONG>(memoryInfo.ullTotalPhys);
     csiPtr->availableMemory = byteToGB<DWORDLONG>(memoryInfo.ullAvailPhys);
-
+    csiPtr->percentInUse = memoryInfo.dwMemoryLoad;
     #ifdef Debug
     std::wcout<<csiPtr->totalMemory<<L'\r'<<L'\n'<<csiPtr->availableMemory<<L'\r'<<L'\n'
-    <<memoryInfo.dwMemoryLoad<<'%'<<L" in use"<<L'\r'<<L'\n'<<L'\n';
+    <<csiPtr->percentInUse<<'%'<<L" in use"<<L'\r'<<L'\n'<<L'\n';
     #endif
 
 
@@ -175,16 +175,26 @@ int wmain(){
     std::wifstream getIPaddr("clientIP.txt");
     getIPaddr>>ipAddress;
     #ifdef Debug
-    std::wcout<<ipAddress<<L'\n';
+    //std::wcout<<ipAddress<<L'\n';
     #endif
 
     //Initialize WinSock
     WSADATA wsaData;
-    if((WSAStartup(MAKEWORD(2,2),&wsaData))!=0)return 1;
+    if((WSAStartup(MAKEWORD(2,2),&wsaData))!=0){
+        #ifdef Debug
+        printE("WSAstart Failed");
+        #endif
+        return 1;
+    }
     
     //Create Socket
     SOCKET cSock{socket(AF_INET,SOCK_STREAM,IPPROTO_TCP)};
-    if(cSock==INVALID_SOCKET){WSACleanup(); return 1;}
+    if(cSock==INVALID_SOCKET){
+        #ifdef Debug
+        printE("cSock Failed");
+        #endif
+        WSACleanup(); return 1;
+    }
     //Fill in a socket address structure
     sockaddr_in cSockAddr;
         cSockAddr.sin_family = AF_INET;
@@ -196,39 +206,53 @@ int wmain(){
                 cSock,reinterpret_cast<sockaddr*>(&cSockAddr),
                 sizeof(cSockAddr))
         )!=0
-    ){closesocket(cSock);WSACleanup();return 1;}
+    ){closesocket(cSock);printE("failed to connect");WSACleanup();return 1;}
     //Do-While loop to send and receive data
     char* serializedData1{reinterpret_cast<char*>(csiPtr.get())};
     char* serializedData2{reinterpret_cast<char*>(driveInfoArray.get())};
     char confirmReception[7];
     if(send(cSock,serializedData1,sizeof(clientSystemInfo),MSG_OOB)==SOCKET_ERROR){
-        closesocket(cSock);WSACleanup();return 1;
-    }
-    if(recv(cSock,confirmReception,7,MSG_WAITALL)==SOCKET_ERROR){
-        closesocket(cSock);WSACleanup();return 1;
-    }
-    if(send(cSock,serializedData2,sizeof(driveInfoArray),MSG_OOB)==SOCKET_ERROR){
+        #ifdef Debug
+        printE("send1 failed");
+        #endif
         closesocket(cSock);WSACleanup();return 1;
     }
 
-    #ifdef Debug
-    std::wcout<<confirmReception<<L'\n';
-    #endif
-    if(recv(cSock,confirmReception,7,MSG_WAITALL)==SOCKET_ERROR){
+    if(send(cSock,reinterpret_cast<char*>(&driveCount),4,MSG_OOB)==SOCKET_ERROR){
+        #ifdef Debug
+        printE("send2 failed");
+        #endif
         closesocket(cSock);WSACleanup();return 1;
     }
+    
+    if(send(cSock,serializedData2,sizeof(driveInfo)*driveCount,MSG_OOB)==SOCKET_ERROR){
+        #ifdef Debug
+        printE("send3 failed");
+        #endif
+        closesocket(cSock);WSACleanup();return 1;
+    }
+    
+    /* if(recv(cSock,confirmReception,7,MSG_WAITALL)==SOCKET_ERROR){
+        closesocket(cSock);WSACleanup();return 1;
+    } */
+
+    #ifdef Debug
+    //std::wcout<<confirmReception<<L'\n';
+    #endif
+    /* if(recv(cSock,confirmReception,7,MSG_WAITALL)==SOCKET_ERROR){
+        closesocket(cSock);WSACleanup();return 1;
+    } */
     
     //Gracefully close down everything
     closesocket(cSock);WSACleanup();
     #ifdef Debug
-    std::wcout<<confirmReception<<L'\n';
+    //std::wcout<<confirmReception<<L'\n';
     #endif
     //////////////////////////////////////////create client socket/////////////////////////////////////
     
-
-    std::wcout<<sizeof(clientSystemInfo)<<" : "<<sizeof(driveInfo)<<L'\n';
     //Exit
     std::wcout.flush();
+    delete serializedData1;delete []serializedData2;
     pause();
     return 0;
 }
@@ -528,5 +552,9 @@ void printWcharT(wchar_t* str,unsigned size){
 void printFormat(std::wstring string){
     std::wcout.width(15);
     std::wcout<<std::left<<string;
+}
+
+void printE(std::string text){
+    std::cout<<text<<std::endl;
 }
 /////////////////////////////////Function Definitions/////////////////////////////////////////
