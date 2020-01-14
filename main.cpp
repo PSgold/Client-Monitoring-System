@@ -1,560 +1,390 @@
 #define WINVER 0x0602
 #define _WIN32_WINNT 0x0602
 #define WIN32_LEAN_AND_MEAN
-#define Debug
+#define SERVICE
+//#define DEBUGLOOP 
+
 
 #include <iostream>
-#include <fstream>
-#include <iomanip>
-#include <memory>
 #include <string>
-#include <cstring>
-#include <vector>
-#include <array>
 #include <thread>
-#include <Windows.h>
-#include <WinSock2.h>
-#include <ws2tcpip.h>
-#include <VersionHelpers.h>
-#include <intrin.h>
+#include <mutex>
+#include <condition_variable>
+#include <filesystem>
+#include <memory>
+#include "Windows.h"
+#include "io.h"
+#include "fcntl.h"
+#include "WinSock2.h"
+#include "ws2tcpip.h"
+#include "VersionHelpers.h"
+#include "intrin.h"
+#include "worker.h"
 
-#pragma comment(lib, "Ws2_32.lib")
+#pragma comment(lib, "advapi32.lib")
 
+namespace chTime = std::chrono;
+typedef chTime::high_resolution_clock chTimeHRC;
 
-//////////////////////////////////////function templates/////////////////////////////////////////////
+//////////////////////////////////FUNCTIONS///////////////////////////////////////////
+bool strcmpW(wchar_t* strA, wchar_t* strB);
+void callWorker();
+
 template <typename Tchar>
-void zeroMemory(Tchar buff,unsigned size){
-    for(unsigned c{0};c<size;c++){
-        buff[c] = '\0';
+void addStrToBuff(Tchar* buff, Tchar* str){
+    unsigned endIndex{0};
+	while(buff[endIndex]!='\0')++endIndex;
+    for(unsigned c{0};str[c]!='\0';++c){
+        buff[endIndex] = str[c]; ++endIndex;
     }
 }
-template <typename num>
-double byteToGB(num number){return (number / 1073741824.00);}
-//////////////////////////////////////function templates////////////////////////////////////////////
+
+template <typename Tchar>
+void remEndPath(Tchar* str){
+	unsigned endIndex{0};
+	while(str[endIndex]!='\0')++endIndex;
+	while(str[endIndex]!='\\'){
+		str[endIndex] = '\0';
+		--endIndex;
+	}
+}
+//////////////////////////////////FUNCTIONS///////////////////////////////////////////
 
 
-///////////////////////////////////User Defined Types//////////////////////////////////////////////
-#pragma pack(push,1)
-struct driveInfo{
-        char root;
-        unsigned lpSectorsPerCluster;
-        unsigned lpBytesPerSector;
-        unsigned lpNumberOfFreeClusters;
-        unsigned lpTotalNumberOfClusters;
+//////////////////////////////////Windows Service Global Definitions/variables and Function Declarations///////////////////////////////////////////
+#define SERVICENAME L"ClientMS"
+#define SERVICEDISPLAYNAME L"Client Monitoring Service"
+SERVICE_STATUS_HANDLE statusHandle;
+SERVICE_STATUS svcStatusStruct;
+HANDLE svcStopEvent{INVALID_HANDLE_VALUE};
 
-        unsigned long long lpFreeBytesAvailableToCaller;
-        unsigned long long lpTotalNumberOfBytes;
-        unsigned long long lpTotalNumberOfFreeBytes;
-};
+void svcInstall(ShaiG::logFile& iLog, std::wstring& svcPath);
+void svcUnInstall();
+void WINAPI svcMainW(DWORD argc, LPWSTR* argv);
+void WINAPI svcCtrlHandler(DWORD dwCtrl);
 
-//this is a struct to serialize and send over the network
-//it doesn't include the drive info as that will be sent separately
-struct clientSystemInfo{
-    //os info
-    char hostName[25];
-    char osVersion[50];
-    unsigned osBuild[3];
-    
-    //processor info
-    char cpuBitNum[15];
-    unsigned coreCount;
-    unsigned threadCount;
-    char manufacturer[13];
-    char cpuModelStr[75];
+//////////////////////////////////Windows Service Global Definitions/variables and Function Declarations///////////////////////////////////////////
+std::mutex globalMutex;
+std::condition_variable cv;
+ShaiG::logFile dLog;
+int wmain(int argc, wchar_t* argv[]){
+    #ifndef SERVICE
+    std::ios_base::sync_with_stdio(0);
+    chTime::minutes Minutes2{2};
+    chTime::minutes Minutes9{9};
+    chTime::time_point<chTimeHRC> newTime;
+    chTime::time_point<chTimeHRC> newTime2;
+    chTime::time_point<chTimeHRC> baseTime{chTimeHRC::now()};
+    chTime::time_point<chTimeHRC> baseTime2{chTimeHRC::now()};
 
-    //memory info
-    double totalMemory;
-    double availableMemory;
-    unsigned percentInUse;
-
-    clientSystemInfo(){
-        zeroMemory<char*>(hostName,25);
-        zeroMemory<char*>(osVersion,50);
-        zeroMemory<char*>(cpuBitNum,15);
-        zeroMemory<char*>(manufacturer,13);
-        zeroMemory<char*>(cpuModelStr,75);
+    unsigned count{0};
+    while(count<3){
+        if (count==0){
+            baseTime = chTimeHRC::now();
+            std::cout<<"starting work\n";
+            startWork();++count;
+            std::wcout<<"End work\n";
+        }
+        if(ShaiG::durationPassed(baseTime2,newTime2,Minutes9))break;
+        else if(ShaiG::durationPassed(baseTime,newTime,Minutes2)){
+            baseTime = chTimeHRC::now();
+            std::cout<<"starting work\n";
+            startWork();++count;
+            std::wcout<<"End work\n";
+        }
     }
-};
-#pragma pack(pop)
-///////////////////////////////////User Defined Types//////////////////////////////////////////////
-
-
-//////////////////////////////////Function Declarations///////////////////////////////////////////
-std::wstring getHostName(); void getOSVer(std::wstring&,unsigned*); 
-std::wstring getOSProduct(const DWORD); 
-void getProcessorInfo(std::wstring&,unsigned&,char* manufacturer,char* cpuModelStr);
-std::wstring getProcessorArchName(WORD); 
-std::wstring getDriveInfo(); void getDriveBytes(std::wstring&, driveInfo*);
-void printWcharT(wchar_t*,unsigned); void pause();
-void printFormat(std::wstring string);void printE(std::string text);
-//////////////////////////////////Function Declarations///////////////////////////////////////////
-
-//////////////////////////////////Main Function//////////////////////////////////////////////
-int wmain(){
-    std::unique_ptr<clientSystemInfo>csiPtr{new clientSystemInfo};
-    //get client host name
-    std::wstring hostName; 
-    hostName = getHostName();
-    WideCharToMultiByte(CP_UTF8,0,hostName.data(),-1,csiPtr->hostName,25,NULL,NULL);
-    #ifdef Debug
-    std::wcout<<csiPtr->hostName<<L'\r'<<L'\n';
+    std::wcout<<"End while loop\n";
+    return 0;
     #endif
+    if (argc>1){
+        wchar_t installStr[]{L"/install"};
+        wchar_t unInstallStr[]{L"/delete"};
+        if (strcmpW(argv[1],installStr)){
+            std::wstring svcPath(MAX_PATH,L'\0');
+            GetModuleFileNameW( NULL, svcPath.data(), MAX_PATH );
+            std::wstring svcProcPath{svcPath};
+            remEndPath(svcPath.data());wchar_t ilFileName[]{L"InstallLog.txt"};
+            addStrToBuff(svcPath.data(),ilFileName);
+            ShaiG::logFile iLog{svcPath,1};
+            //set console input and output to unicode
+            _setmode(_fileno(stdin), _O_U16TEXT);
 
+            //disable console quick edit mode so mouse click won't pause the process
+            DWORD consoleMode;
+            HANDLE inputHandle{ GetStdHandle(STD_INPUT_HANDLE) };
+            GetConsoleMode(inputHandle, &consoleMode);
+            SetConsoleMode(inputHandle, consoleMode & (~ENABLE_QUICK_EDIT_MODE));
+            svcInstall(iLog, svcProcPath);return 0;
+        }else if(strcmpW(argv[1],unInstallStr)){
+            //set console input and output to unicode
+            _setmode(_fileno(stdin), _O_U16TEXT);
 
-    //get os version
-    std::wstring osProdName;
-    unsigned build[3];
-    getOSVer(osProdName,csiPtr->osBuild);
-    WideCharToMultiByte(CP_UTF8,0,osProdName.data(),-1,csiPtr->osVersion,50,NULL,NULL);
-    #ifdef Debug
-    std::wcout<<csiPtr->osVersion<<L'\r'<<L'\n'
-    <<csiPtr->osBuild[0]<<L'.'<<csiPtr->osBuild[1]<<L'.'<<csiPtr->osBuild[2]
-    <<L'\r'<<L'\n'<<L'\n';
-    #endif
-    
-
-    //get CPU info
-    std::wstring architecture;
-    csiPtr->threadCount = std::thread::hardware_concurrency();
-    std::unique_ptr<char>manufacturer{new char[13]{"\0\0\0\0\0\0\0\0\0\0\0\0"}};
-    std::unique_ptr<char>cpuModelStr{new char[49]{
-        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-    }}; getProcessorInfo(architecture,csiPtr->coreCount,csiPtr->manufacturer,csiPtr->cpuModelStr);
-    WideCharToMultiByte(CP_UTF8,0,architecture.data(),-1,csiPtr->cpuBitNum,15,NULL,NULL);
-    #ifdef Debug
-    std::wcout<<csiPtr->cpuBitNum<<L'\r'<<L'\n'<<csiPtr->coreCount
-    <<L'\r'<<L'\n'<<csiPtr->threadCount<<L'\r'<<L'\n'<<csiPtr->manufacturer
-    <<L'\r'<<L'\n'<<csiPtr->cpuModelStr<<L'\r'<<L'\n'<<L'\n';
-    #endif
-
-
-    //get memory info
-    MEMORYSTATUSEX memoryInfo{sizeof(MEMORYSTATUSEX)};//sets dwLength to size of struct
-    GlobalMemoryStatusEx(&memoryInfo);
-    //auto byteToGB = [](DWORDLONG num){return num / 1073741824.00;};//lambda: converts bytes to GB
-    csiPtr->totalMemory = byteToGB<DWORDLONG>(memoryInfo.ullTotalPhys);
-    csiPtr->availableMemory = byteToGB<DWORDLONG>(memoryInfo.ullAvailPhys);
-    csiPtr->percentInUse = memoryInfo.dwMemoryLoad;
-    #ifdef Debug
-    std::wcout<<csiPtr->totalMemory<<L'\r'<<L'\n'<<csiPtr->availableMemory<<L'\r'<<L'\n'
-    <<csiPtr->percentInUse<<'%'<<L" in use"<<L'\r'<<L'\n'<<L'\n';
-    #endif
-
-
-    //get drive info
-    /*driveStr will hold list of drive letters
-    each letter followed by a number that represents drive type
-    '3' = Fixed drive ; '2' = Removable drive(ignored) ; '5' = DVD drive*/
-    std::wstring driveStr;
-    driveStr = getDriveInfo();
-    unsigned driveCount{driveStr.length()/2};
-    /* #ifdef Debug
-    std::wcout<<driveCount<<L'\r'<<L'\n'<<driveStr<<L'\r'<<L'\n'<<L'\n';
-    #endif */
-    std::unique_ptr<driveInfo> driveInfoArray{new driveInfo[driveCount]};
-    getDriveBytes(driveStr,driveInfoArray.get());
-    
-    #ifdef Debug
-    printFormat(L"Drive");printFormat(L"Total Bytes");printFormat(L"Available Bytes");
-    std::wcout<<L'\r'<<L'\n';
-    for(unsigned c{0};c<driveCount;c++){
-        std::wcout<<std::setw(15)<<std::left<<driveInfoArray.get()[c].root<<
-        std::setw(15)<<std::right<<driveInfoArray.get()[c].lpTotalNumberOfBytes
-        <<std::setw(15)<<std::right<<driveInfoArray.get()[c].lpTotalNumberOfFreeBytes<<L'\r'<<L'\n';
+            //disable console quick edit mode so mouse click won't pause the process
+            DWORD consoleMode;
+            HANDLE inputHandle{ GetStdHandle(STD_INPUT_HANDLE) };
+            GetConsoleMode(inputHandle, &consoleMode);
+            SetConsoleMode(inputHandle, consoleMode & (~ENABLE_QUICK_EDIT_MODE));
+            svcUnInstall();return 0;
+        }
+        else {
+            std::wstring svcPath(MAX_PATH,L'\0');
+            GetModuleFileNameW( NULL, svcPath.data(), MAX_PATH );
+            remEndPath(svcPath.data());wchar_t lFileName[]{L"Log.txt"};
+            addStrToBuff(svcPath.data(),lFileName);
+            dLog.OPEN(svcPath,1);    
+            dLog.write("Service was run with unapproved argument!");
+            return 0;
+        } 
     }
-    #endif
+    std::wstring svcPath(MAX_PATH,L'\0');
+    GetModuleFileNameW( NULL, svcPath.data(), MAX_PATH );
+    remEndPath(svcPath.data());wchar_t lFileName[]{L"Log.txt"};
+    addStrToBuff(svcPath.data(),lFileName);
+    dLog.OPEN(svcPath,1);    
+    SERVICE_TABLE_ENTRYW serviceTable[]{
+        {const_cast<LPWSTR>(SERVICENAME),static_cast<LPSERVICE_MAIN_FUNCTIONW>(svcMainW)},
+        {NULL,NULL}
+    };
 
-    #ifdef Debug
-    std::wcout<<L'\r'<<L'\n'<<L'\n';
-    #endif
-
-
-    /////////////////////////////////////////////create client socket///////////////////////////////////
-    std::wstring ipAddress;//server ip address
-    unsigned port{62211};//server port
-    std::wifstream getIPaddr("clientIP.txt");
-    getIPaddr>>ipAddress;
-    #ifdef Debug
-    //std::wcout<<ipAddress<<L'\n';
-    #endif
-
-    //Initialize WinSock
-    WSADATA wsaData;
-    if((WSAStartup(MAKEWORD(2,2),&wsaData))!=0){
-        #ifdef Debug
-        printE("WSAstart Failed");
-        #endif
-        return 1;
+    if(StartServiceCtrlDispatcherW(serviceTable)==0){
+        dLog.write("StartServiceCtrlDipatcher Failed!");
+        return 0;
     }
-    
-    //Create Socket
-    SOCKET cSock{socket(AF_INET,SOCK_STREAM,IPPROTO_TCP)};
-    if(cSock==INVALID_SOCKET){
-        #ifdef Debug
-        printE("cSock Failed");
-        #endif
-        WSACleanup(); return 1;
-    }
-    //Fill in a socket address structure
-    sockaddr_in cSockAddr;
-        cSockAddr.sin_family = AF_INET;
-        cSockAddr.sin_port = htons(port);
-        InetPtonW(AF_INET,ipAddress.data(),&cSockAddr.sin_addr);
-    //connect to server
-    if(
-        (connect(
-                cSock,reinterpret_cast<sockaddr*>(&cSockAddr),
-                sizeof(cSockAddr))
-        )!=0
-    ){closesocket(cSock);printE("failed to connect");WSACleanup();return 1;}
-    //Do-While loop to send and receive data
-    char* serializedData1{reinterpret_cast<char*>(csiPtr.get())};
-    char* serializedData2{reinterpret_cast<char*>(driveInfoArray.get())};
-    char confirmReception[7];
-    if(send(cSock,serializedData1,sizeof(clientSystemInfo),MSG_OOB)==SOCKET_ERROR){
-        #ifdef Debug
-        printE("send1 failed");
-        #endif
-        closesocket(cSock);WSACleanup();return 1;
-    }
-
-    if(send(cSock,reinterpret_cast<char*>(&driveCount),4,MSG_OOB)==SOCKET_ERROR){
-        #ifdef Debug
-        printE("send2 failed");
-        #endif
-        closesocket(cSock);WSACleanup();return 1;
-    }
-    
-    if(send(cSock,serializedData2,sizeof(driveInfo)*driveCount,MSG_OOB)==SOCKET_ERROR){
-        #ifdef Debug
-        printE("send3 failed");
-        #endif
-        closesocket(cSock);WSACleanup();return 1;
-    }
-    
-    /* if(recv(cSock,confirmReception,7,MSG_WAITALL)==SOCKET_ERROR){
-        closesocket(cSock);WSACleanup();return 1;
-    } */
-
-    #ifdef Debug
-    //std::wcout<<confirmReception<<L'\n';
-    #endif
-    /* if(recv(cSock,confirmReception,7,MSG_WAITALL)==SOCKET_ERROR){
-        closesocket(cSock);WSACleanup();return 1;
-    } */
-    
-    //Gracefully close down everything
-    closesocket(cSock);WSACleanup();
-    #ifdef Debug
-    //std::wcout<<confirmReception<<L'\n';
-    #endif
-    //////////////////////////////////////////create client socket/////////////////////////////////////
-    
-    //Exit
-    std::wcout.flush();
-    delete serializedData1;delete []serializedData2;
-    pause();
+    dLog.write("Service Stoppped");
     return 0;
 }
-//////////////////////////////////Main Function//////////////////////////////////////////////
 
+void WINAPI svcMainW(DWORD argc, LPWSTR* argv){
+    statusHandle = RegisterServiceCtrlHandlerW(SERVICENAME,svcCtrlHandler);
+    if (statusHandle==0)return;
+    ZeroMemory(&svcStatusStruct,sizeof(svcStatusStruct));
+    svcStatusStruct.dwServiceType = SERVICE_WIN32_OWN_PROCESS;
+    svcStatusStruct.dwServiceSpecificExitCode = 0;
+    svcStatusStruct.dwCurrentState = SERVICE_START_PENDING;
+    svcStatusStruct.dwWin32ExitCode = 0;
+    svcStatusStruct.dwCheckPoint = 0;
 
-
-
-/////////////////////////////////Function Definitions/////////////////////////////////////////
-
-std::wstring getHostName(){
-    unsigned long hostNameLen;
-    GetComputerNameExW(ComputerNameDnsHostname,NULL,&hostNameLen);
-    std::unique_ptr<wchar_t> hostName{new wchar_t[hostNameLen]};
-        //if returns 0 error
-    if(GetComputerNameExW(ComputerNameDnsHostname,hostName.get(),&hostNameLen)==0)return L"HostNameError";
-    else return hostName.get(); 
-}
-
-void getOSVer(std::wstring& productName,unsigned* build){
-    unsigned fileVerInfoSize{GetFileVersionInfoSizeExW(FILE_VER_GET_LOCALISED,L"Kernel32.dll",NULL)};
-    std::unique_ptr<char> fileInfo{new char[fileVerInfoSize]};
-    void* fileInfoPtr{nullptr};
-            //returns bool need to add conditioanl statement to test success
-    GetFileVersionInfoExW(FILE_VER_GET_LOCALISED,L"Kernel32.dll",NULL,fileVerInfoSize,fileInfo.get());
-    LPCWSTR file{L"\\VarFileInfo\\Translation"};
-    PUINT fileLen{0};
-    VerQueryValueW(fileInfo.get(),L"\\",&fileInfoPtr,fileLen);
-    const VS_FIXEDFILEINFO* fileInfoStruct{static_cast<const VS_FIXEDFILEINFO*>(fileInfoPtr)};
-
-	DWORD product{};
-	GetProductInfo(
-		HIWORD(fileInfoStruct->dwFileVersionMS),
-		LOWORD(fileInfoStruct->dwFileVersionMS),
-		HIWORD(fileInfoStruct->dwFileVersionLS),
-		LOWORD(fileInfoStruct->dwFileVersionLS),
-		&product			
-	);
-    productName = getOSProduct(product);
-    build[0] = HIWORD(fileInfoStruct->dwFileVersionMS);
-    build[1] = LOWORD(fileInfoStruct->dwFileVersionMS);
-    build[2] = HIWORD(fileInfoStruct->dwFileVersionLS);
-}
-
-std::wstring getOSProduct(const DWORD product){
-    switch (product){
-        case 0x00000030:return L"Windows 10 Pro";
-        case 0x00000065:return L"Windows 10 Home";
-        case 0x00000004:return L"Windows 10 Enterprise";
-        case 0x0000002A:return L"Microsoft Hyper-V Server";
-        case 0x0000000A:return L"Server Enterprise(full)";
-        case 0x0000000E:return L"Server Enterprise(core)";
-        case 0x00000007:return L"Server Standard(full)";
-        case 0x00000006:return L"Business";
-        case 0x00000010:return L"Business N";
-        case 0x00000012:return L"HPC Edition";
-        case 0x00000040:return L"Server Hyper Core V";
-        case 0x00000063:return L"Windows 10 Home China";
-        case 0x00000062:return L"Windows 10 Home N";
-        case 0x00000064:return L"Windows 10 Home Single Language";
-        case 0x00000050:return L"Server Datacenter Evaluation";
-        case 0x00000091:return L"Server Datacenter, Semi-Annual(core)";
-        case 0x00000092:return L"Server Standard, Semi-Annual(core)";
-        case 0x00000008:return L"Server Datacenter (full)";
-        case 0x0000000C:return L"Server Datacenter (core, 2008 R2 and earlier)";
-        case 0x00000027:return L"Server Datacenter without Hyper-V(core)";
-        case 0x00000025:return L"Server Datacenter without Hyper-V(full)";
-        case 0x00000079:return L"Windows 10 Education";
-        case 0x0000007A:return L"Windows 10 Education N";
-        case 0x00000046:return L"Windows 10 Enterprise E";
-        case 0x00000048:return L"Windows 10 Enterprise Evaluation";
-        case 0x0000001B:return L"Windows 10 Enterprise N";
-        case 0x00000054:return L"Windows 10 Enterprise N Evaluation";
-        case 0x0000007D:return L"Windows 10 Enterprise 2015 LTSB";
-        case 0x00000081:return L"Windows 10 Enterprise 2015 LTSB Evaluation";
-        case 0x0000007E:return L"Windows 10 Enterprise 2015 LTSB N";
-        case 0x00000082:return L"Windows 10 Enterprise 2015 LTSB N Evaluation";
-        case 0x00000029:return L"Server Enterprise without Hyper-V(core)";
-        case 0x0000000F:return L"Server Enterprise Itanium based systems";
-        case 0x00000026:return L"Server Enterprise without Hyper-V(full)";
-        case 0x0000003C:return L"Windows Essential Server Solution Additional";
-        case 0x0000003E:return L"Windows Essential Server Solution Additional SVC";
-        case 0x0000003B:return L"Windows Essential Server Solution Management";
-        case 0x0000003D:return L"Windows Essential Server Solution Management SVC";
-        case 0x00000002:return L"Home Basic";
-        case 0x00000005:return L"Home Basic N";
-        case 0x00000003:return L"Home Premium";
-        case 0x0000001A:return L"Home Premium N";
-        case 0x00000022:return L"Windows Home Server 2011";
-        case 0x00000013:return L"Windows Storage Server 2008 R2 Essentials";
-        case 0x0000007B:return L"Windows 10 IoT Core";
-        case 0x00000083:return L"Windows 10 IoT Core Commercial";
-        case 0x0000001E:return L"Windows Essential Business Server Management Server";
-        case 0x00000020:return L"Windows Essential Business Server Messaging Server";
-        case 0x0000001F:return L"Windows Essential Business Server Security Server";
-        case 0x00000068:return L"Windows 10 Mobile";
-        case 0x00000085:return L"Windows 10 Mobile Enterprise";
-        case 0x0000004D:return L"Windows Multipoint Server Premium(full)";
-        case 0x0000004C:return L"Windows Multipoint Server Standard(full)";
-        case 0x000000A1:return L"Windows 10 Pro for Workstations";
-        case 0x000000A2:return L"Windows 10 Pro for Workstations N";
-        case 0x00000031:return L"Windows 10 Pro N";
-        case 0x00000067:return L"Professional with Media Center";
-        case 0x00000001:return L"Ultimate";
-        case 0x0000001C:return L"Ultimate N";
-        case 0x00000011:return L"Web Server(full)";
-        case 0x0000001D:return L"Web Server(core)";
-        case 0x0000004F:return L"Server Standard Evaluation";
-        case 0x0000000D:return L"Server Standard(core) 2008 R2 and earlier";
-        case 0x00000028:return L"Server Standard without Hyper-V(core)";
-        case 0x00000024:return L"Server Standard without Hyper-V";
-        
-        default: return L"N\\A";
-    }
-}
-
-void getProcessorInfo(
-    std::wstring& cpuArchName,unsigned& coreCount,
-    char* manufacturer,char* cpuModelStr
-){
-    SYSTEM_INFO sysInfo;
-    GetNativeSystemInfo(&sysInfo);
-    cpuArchName = getProcessorArchName(sysInfo.wProcessorArchitecture);
-    coreCount = sysInfo.dwNumberOfProcessors;
+    if(SetServiceStatus(statusHandle,&svcStatusStruct)==0)return;
     
-    int processorDetails[4];
-    __cpuid(processorDetails,0);
-    memcpy(manufacturer,&processorDetails[1],4);
-    memcpy(manufacturer+4,&processorDetails[3],4);
-    memcpy(manufacturer+8,&processorDetails[2],4);
-
-    char cpuStr[]{
-        "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0"
-    };
-    unsigned charIndex{0};
-    for(unsigned c{0x80000002};c<0x80000005;c++){
-        __cpuid(processorDetails,c);
-        memcpy(cpuStr+charIndex,&processorDetails,16);
-        charIndex+=16;    
+    svcStopEvent = CreateEventW(NULL,TRUE,FALSE,NULL);
+    if(svcStopEvent==NULL) {
+        svcStatusStruct.dwControlsAccepted = 0;
+        svcStatusStruct.dwCurrentState = SERVICE_STOPPED;
+        svcStatusStruct.dwWin32ExitCode = GetLastError();
+        svcStatusStruct.dwCheckPoint = 1;
+        SetServiceStatus(statusHandle,&svcStatusStruct);
+        return;
     }
     
-    unsigned brandIndex{0};
-    for(unsigned c{0};c<48;c++){
-        if(cpuStr[c]!='\0'&&cpuStr[c]!=' '){
-            cpuModelStr[brandIndex] = cpuStr[c];
-            brandIndex++;
-            for (unsigned d{c+1};d<48;d++){
-                if (cpuStr[d]!='\0'){
-                    cpuModelStr[brandIndex] = cpuStr[d];
-                    brandIndex++;
-                }else break;
-            }
-            break;
+    svcStatusStruct.dwCurrentState = SERVICE_RUNNING;
+    svcStatusStruct.dwControlsAccepted = SERVICE_ACCEPT_STOP;
+    svcStatusStruct.dwWin32ExitCode = 0;
+    svcStatusStruct.dwCheckPoint = 0;
+
+    SetServiceStatus(statusHandle,&svcStatusStruct);
+    
+    dLog.write("Service Started Successfully");
+
+    #ifdef DEBUGLOOP
+    callWorker();
+    #endif
+
+   #ifndef DEBUGLOOP
+    chTime::minutes minutes2{2};
+    std::unique_lock globalLocked(globalMutex);
+    int swrt;//Start Work return code
+    while(WaitForSingleObject(svcStopEvent,0)!=WAIT_OBJECT_0){
+        dLog.write("Calling startWork");
+        swrt = startWork(dLog);
+        if(swrt==1)dLog.write("startWork Successfully returned");
+        else {
+            dLog.write("startWork Failed. Error Code ",0);
+            dLog.write(swrt);
         }
+        cv.wait_for(globalLocked,minutes2);
+    }
+    #endif
+
+    CloseHandle(svcStopEvent);
+
+    svcStatusStruct.dwControlsAccepted = 0;
+    svcStatusStruct.dwCurrentState = SERVICE_STOPPED;
+    svcStatusStruct.dwWin32ExitCode = 0;
+    svcStatusStruct.dwCheckPoint = 3;
+    dLog.write("Service Stopping");
+    SetServiceStatus(statusHandle,&svcStatusStruct);
+
+    return;
+}
+
+void WINAPI svcCtrlHandler(DWORD dwCtrl){
+     // Handle the requested control code. 
+    switch(dwCtrl) {  
+      case SERVICE_CONTROL_STOP: 
+        if(svcStatusStruct.dwCurrentState != SERVICE_RUNNING) break;
+        svcStatusStruct.dwControlsAccepted = 0;
+        svcStatusStruct.dwCurrentState = SERVICE_STOP_PENDING;
+        svcStatusStruct.dwWin32ExitCode = 0;
+        svcStatusStruct.dwCheckPoint = 4; 
+        SetEvent(svcStopEvent);
+        cv.notify_one();
+        break;
+      
+      default: 
+         break;
+   }
+   return; 
+}
+
+bool strcmpW(wchar_t* strA, wchar_t* strB){
+    for(unsigned c{0};1;++c){
+        if (strA[c]!=strB[c])return 0;
+        if (strA[c] == L'\0')return 1;
     }
 }
 
-std::wstring getProcessorArchName(WORD archNum){
-    switch (archNum){
-        case 9:return L"AMD64";
-        case 0:return L"AMDx86";
-        case 5:return L"ARM";
-        case 12:return L"ARM64";
-        case 6:return L"Itanium";
-        
-        default:return L"N\\A";
+void callWorker(){
+    std::wstring svcPathN(MAX_PATH,L'\0');
+    GetModuleFileNameW( NULL, svcPathN.data(), MAX_PATH );
+    remEndPath(svcPathN.data());wchar_t lFileName[]{L"DebugLoop.txt"};
+    addStrToBuff(svcPathN.data(),lFileName);
+    ShaiG::logFile debugLoop{svcPathN};
+    chTime::minutes minutes2{2};
+    std::unique_lock globalLocked(globalMutex);
+    while(WaitForSingleObject(svcStopEvent,0)!=WAIT_OBJECT_0){
+        debugLoop.write("Debugging Loop!");
+        cv.wait_for(globalLocked,minutes2);
     }
 }
 
-std::wstring getDriveInfo(){
-    DWORD driveInfoSize;
-    driveInfoSize = GetLogicalDriveStringsW(NULL,NULL);
-    std::unique_ptr<wchar_t> driveInfoBuffer{new wchar_t[driveInfoSize]};
-    zeroMemory<wchar_t*>(driveInfoBuffer.get(),driveInfoSize);
-    GetLogicalDriveStringsW(driveInfoSize,driveInfoBuffer.get());
-    unsigned driveCount {(driveInfoSize-1)/4};
-    std::unique_ptr<wchar_t> driveLetters{new wchar_t[driveCount+driveCount+1]};
-    zeroMemory<wchar_t*>(driveLetters.get(),driveCount+driveCount+1);
+void svcInstall(ShaiG::logFile& iLog,std::wstring& svcPath){
+    std::cout<<"Installing Service\n";
+    iLog.write("Installing clientMS service");
     
-    wchar_t driveRoot[4]{L"\0\0\0"};
-    driveRoot[1] = L':';driveRoot[2] = L'\\';
-    unsigned driveBuffIndex{0};
-    unsigned driveLetterIndex{0};
-    for(unsigned c{0};c<driveCount;c++){
-        driveRoot[0] = driveInfoBuffer.get()[driveBuffIndex];
-        //'3' = Fixed drive ; '2' = Removable drive(ignored) ; '5' = DVD drive
-        if(GetDriveTypeW(driveRoot)==3)driveLetters.get()[driveLetterIndex+1] = L'3';
-        else if(GetDriveTypeW(driveRoot)==5)driveLetters.get()[driveLetterIndex+1] = L'5';
-        else {driveBuffIndex+=4; continue;}
-        driveLetters.get()[driveLetterIndex] = driveInfoBuffer.get()[driveBuffIndex];
-        driveBuffIndex+=4;
-        driveLetterIndex+=2;
-    }
-    /* #ifdef Debug
-    printWcharT(driveInfoBuffer.get(),driveInfoSize);
-    std::wcout<<'\r'<<'\n';
-    printWcharT(driveLetters.get(),driveCount+driveCount);
-    std::wcout<<'\r'<<'\n';
-    #endif */
-    return driveLetters.get();
-}
+    //wchar_t szPath[MAX_PATH];//buffer to store full service path
+    //copies process name to szPath buffer
+    //GetModuleFileNameW( NULL, szPath, MAX_PATH );
 
-void getDriveBytes(std::wstring& driveStr, driveInfo* driveInfoArray){
-    struct diskStruct{
-        DWORD* lpSectorsPerCluster;
-        DWORD* lpBytesPerSector;
-        DWORD* lpNumberOfFreeClusters;
-        DWORD* lpTotalNumberOfClusters;
-
-        ULARGE_INTEGER* lpFreeBytesAvailableToCaller;
-        ULARGE_INTEGER* lpTotalNumberOfBytes;
-        ULARGE_INTEGER* lpTotalNumberOfFreeBytes;
-
-        diskStruct():
-            lpSectorsPerCluster{new DWORD},
-            lpBytesPerSector{new DWORD},
-            lpNumberOfFreeClusters{new DWORD},
-            lpTotalNumberOfClusters{new DWORD},
-
-            lpFreeBytesAvailableToCaller{new ULARGE_INTEGER},
-            lpTotalNumberOfBytes{new ULARGE_INTEGER},
-            lpTotalNumberOfFreeBytes{new ULARGE_INTEGER}
-        {}
-        
-        ~diskStruct(){
-            delete lpSectorsPerCluster;
-            delete lpBytesPerSector;
-            delete lpNumberOfFreeClusters;
-            delete lpTotalNumberOfClusters;
-
-            delete lpFreeBytesAvailableToCaller;
-            delete lpTotalNumberOfBytes;
-            delete lpTotalNumberOfFreeBytes;
-        }
+    // Get a handle to the SCM database. 
+    SC_HANDLE schSCManager {
+        OpenSCManagerW( 
+            NULL,                         // local computer
+            SERVICES_ACTIVE_DATABASEW,    // ServicesActive database 
+            SC_MANAGER_ALL_ACCESS         // full access rights
+        )
+    };   
+ 
+    if (schSCManager == NULL){
+        dLog.write("Failed to connect to SCM database");
+        return;
     };
 
-    unsigned long long* lpFreeBytesAvailableToCallerPtr{nullptr};
-    unsigned long long* lpTotalNumberOfBytesPtr{nullptr};
-    unsigned long long* lpTotalNumberOfFreeBytesPtr{nullptr};
-    wchar_t rootDiskStr[3];rootDiskStr[2] = L'\0';rootDiskStr[1] = L':';
-    unsigned indexDIA{0};
-    diskStruct diskInfo;
-    for(unsigned c{0};c<driveStr.length();c+=2){
-        rootDiskStr[0] = driveStr[c];
-        GetDiskFreeSpaceW(
-            rootDiskStr,
-            diskInfo.lpSectorsPerCluster,
-            diskInfo.lpBytesPerSector,
-            diskInfo.lpNumberOfFreeClusters,
-            diskInfo.lpTotalNumberOfClusters
-            );
-        GetDiskFreeSpaceExW(
-            rootDiskStr,
-            diskInfo.lpFreeBytesAvailableToCaller,
-            diskInfo.lpTotalNumberOfBytes,
-            diskInfo.lpTotalNumberOfFreeBytes
-        );
-        driveInfoArray[indexDIA].root = driveStr[c]; //compiler needs to convert wchar(of wstring) to char
-        driveInfoArray[indexDIA].lpSectorsPerCluster = *(diskInfo.lpSectorsPerCluster);
-        driveInfoArray[indexDIA].lpBytesPerSector = *(diskInfo.lpBytesPerSector);
-        driveInfoArray[indexDIA].lpNumberOfFreeClusters = *(diskInfo.lpNumberOfFreeClusters);
-        driveInfoArray[indexDIA].lpTotalNumberOfClusters = *(diskInfo.lpTotalNumberOfClusters);
-        
-        unsigned long long* lpFreeBytesAvailableToCallerPtr = reinterpret_cast<unsigned long long*>(diskInfo.lpTotalNumberOfFreeBytes);
-        unsigned long long* lpTotalNumberOfBytesPtr = reinterpret_cast<unsigned long long*>(diskInfo.lpTotalNumberOfBytes);
-        unsigned long long* lpTotalNumberOfFreeBytesPtr = reinterpret_cast<unsigned long long*>(diskInfo.lpTotalNumberOfFreeBytes);
-        driveInfoArray[indexDIA].lpFreeBytesAvailableToCaller = *(lpFreeBytesAvailableToCallerPtr);
-        driveInfoArray[indexDIA].lpTotalNumberOfBytes = *(lpTotalNumberOfBytesPtr);
-        driveInfoArray[indexDIA].lpTotalNumberOfFreeBytes = *(lpTotalNumberOfFreeBytesPtr);
-
-        indexDIA++;
+    // Create the service
+    SC_HANDLE schService {
+        CreateServiceW( 
+            schSCManager,              // SCM database 
+            SERVICENAME,               // name of service 
+            SERVICEDISPLAYNAME,        // service name to display 
+            SERVICE_ALL_ACCESS,        // desired access 
+            SERVICE_WIN32_OWN_PROCESS, // service type 
+            SERVICE_AUTO_START,        // start type 
+            SERVICE_ERROR_NORMAL,      // error control type 
+            svcPath.data(),            // path to service's binary 
+            NULL,                      // no load ordering group 
+            NULL,                      // no tag identifier 
+            NULL,                      // no dependencies 
+            NULL,                      // LocalSystem account 
+            NULL                       // no password 
+        )
+    };                     
+ 
+    if (schService == NULL){
+        iLog.write("Create service failed");
+        iLog.write("Installation Failed");
+        CloseServiceHandle(schService); 
+        CloseServiceHandle(schSCManager);
     }
-    delete lpFreeBytesAvailableToCallerPtr;
-    delete lpTotalNumberOfBytesPtr;
-    delete lpTotalNumberOfFreeBytesPtr;
-}
+    else{
+        std::wcout<<"Service, "<<SERVICENAME<<", installed successfully\n";
+        iLog.write("Create Service Successfull");
+        iLog.write("Installation Successfull");
+        _SERVICE_DESCRIPTIONW svcDescriptStruct;
+        wchar_t svcDescript[]{
+            L"A monitoring service that sends client information to server."
+        };
+        svcDescriptStruct.lpDescription = svcDescript;
+        if(ChangeServiceConfig2W(schService,1,&svcDescriptStruct)==0){
+            iLog.write("Set service description Failed");
+        }else{
+            iLog.write("Set service description Successfull");
+        }
 
-void pause(){
-    std::wcout<<L"Pause... ";
-    std::wcin.get();
-}
-
-#ifdef Debug
-void printWcharT(wchar_t* str,unsigned size){
-    for(unsigned c{0};c<size;c++){
-        std::wcout<<str[c]<<'\r'<<'\n';
+        StartServiceW(schService,NULL,NULL);
+        CloseServiceHandle(schService); 
+        CloseServiceHandle(schSCManager);
     }
 }
-#endif
 
-/* void zeroMemory(wchar_t* buff,unsigned size){
-    for(unsigned c{0};c<size;c++){
-        buff[c] = L'\0';
+void svcUnInstall(){
+    // Get a handle to the SCM database. 
+    SC_HANDLE schSCManager {
+        OpenSCManagerW( 
+            NULL,                         // local computer
+            SERVICES_ACTIVE_DATABASEW,    // ServicesActive database 
+            SC_MANAGER_ALL_ACCESS         // full access rights
+        )
+    };
+
+    if (schSCManager == NULL){
+        std::wcout<<L"Delete Sevice Failed\n";
+        dLog.write("Failed to connect to SCM database");
+        return;
+    };
+
+    SC_HANDLE schSvc {
+        OpenServiceW(
+            schSCManager,
+            SERVICENAME,
+            SERVICE_ALL_ACCESS
+        )
+    };
+
+    if (schSvc == NULL){
+        std::wcout<<L"Delete Sevice Failed\n";
+        dLog.write("Open Service Failed");
+        CloseServiceHandle(schSvc); 
+        CloseServiceHandle(schSCManager);
+        return;
     }
+
+    if(DeleteService(schSvc)==0){
+        std::wcout<<L"Delete Sevice Failed\n";
+        dLog.write("Delete Service Failed");
+        CloseServiceHandle(schSvc); 
+        CloseServiceHandle(schSCManager);
+    }else{
+        std::wcout<<L"Deleted Service, "<<SERVICENAME
+        <<L", Successfully\n";
+        CloseServiceHandle(schSvc); 
+        CloseServiceHandle(schSCManager);
+    }
+}
+
+/* void workerThread(){
+    std::ofstream svcTest{"c:\\Program Files\\svcTest\\checking.txt",std::ios::trunc};
+    
+    chTime::minutes twoMinutes{2};
+    chTime::time_point<chTimeHRC> newTime;
+    chTime::time_point<chTimeHRC> baseTime{
+        chTimeHRC::now()
+    };
+
+    while(WaitForSingleObject(svcStopEvent,0)!=WAIT_OBJECT_0){
+        if(ShaiG::durationPassed(baseTime,newTime,twoMinutes)){
+            baseTime = chTimeHRC::now();
+            svcTest<<"checking\n";
+        }
+    }
+    svcTest.close();
+    return;
 } */
-
-void printFormat(std::wstring string){
-    std::wcout.width(15);
-    std::wcout<<std::left<<string;
-}
-
-void printE(std::string text){
-    std::cout<<text<<std::endl;
-}
-/////////////////////////////////Function Definitions/////////////////////////////////////////
